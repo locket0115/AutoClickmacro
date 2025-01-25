@@ -51,8 +51,11 @@ class Excel:
         self.orderData = [] #반환값
 
         for sheet in self.excelData:
-            name = sheet[:4] # 종목 이름 , 시트 이름 앞 4글자
-            if(name == 'Data'): # Data 시트 제외
+            name = self.excelData[sheet].columns[0]
+
+            print(name)
+
+            if(sheet == 'Data'): # Data 시트 제외
                 continue
 
             stock = Stocks(name, [])
@@ -60,8 +63,7 @@ class Excel:
             for row in self.excelData[sheet].iterrows(): #모든 행에 대해 반복
                 bs = row[1].iloc[0] # 매수/매도
                 price = row[1]['주문가'] # 주문가
-                # method = row[1]['주문 방법'] # 주문 방법
-                method = row[1].iloc[0]
+                method = row[1]['유형'] # 주문 방법
                 quantity = row[1]['수량'] # 수량
 
                 if(quantity == 0): # 수량이 0인 경우 제외
@@ -70,7 +72,7 @@ class Excel:
                 stock.add_order(Order(True if bs == '매수' else False, price, method, quantity))
 
             if stock.orders != []:
-                self.orderData.append(stock)
+                self.orderData.append((stock, sheet))
                 logger.debug(f'sheet {sheet} appended')
     
     def getData(self, file_path):

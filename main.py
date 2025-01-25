@@ -14,6 +14,10 @@ from pynput import keyboard
 from excel import *
 from data import *
 
+# const
+command_widget_cnt = 10  # command_widget 내부 위젯 갯수
+
+
 
 # 루트 로거 생성
 logger = logging.getLogger()
@@ -83,11 +87,17 @@ class OrderThread(QThread):
         # 데이터 가져오기
         current_table = self.showExcelData.currentWidget()
 
-        stock = self.showExcelData.tabText(self.showExcelData.currentIndex())
+        stock = current_table.horizontalHeaderItem(0).text()
         logger.debug(f"Stock: {stock}")
 
 
+        self.executeCommand("계좌선택", stock)
+
+        self.executeCommand("종목선택", stock)
+
         for row in range(current_table.rowCount()): # 주문 row에 대하여
+            self.highlightExcelTable_signal.emit(row, QColor(128, 128, 128)) # 강조
+
             self.mutex.lock()
             if self.paused: # 일시정지 체크
                 self.progress_signal.emit('주문 일시정지됨.')
@@ -95,126 +105,114 @@ class OrderThread(QThread):
 
             if not self.running: # 정지 체크
                 self.progress_signal.emit("주문 정지됨.")
+                self.highlightExcelTable_signal.emit(row, QColor(255, 255, 255)) # 강조 해제
                 return
             
             self.mutex.unlock()
 
-            self.highlightExcelTable_signal.emit(row, QColor(128, 128, 128)) # 강조
 
-
-
-            bs = True if current_table.item(row, 0).text() == '매수' else False
-            price = float(current_table.item(row, 1).text())
+            bs = current_table.item(row, 0).text()
+            price = current_table.item(row, 1).text()
             method = current_table.item(row, 2).text()
-            quantity = int(current_table.item(row, 3).text())
-
-            logger.debug(f"Order: {'매수' if bs else '매도'}, {price}, {method}, {quantity}")
-
-            # 커맨트 탭 선택
-            command_tab = None
-    
-            for idx in range(self.showCommand.count()): # 구매 방식 탭
-                if self.showCommand.tabText(idx) == f"{'매수' if bs else '매도'}_{method}":
-                    command_tab = self.showCommand.widget(idx).layout().itemAt(0).widget()
-                    self.showCommand.setCurrentIndex(idx)
-
-                    logger.debug(f"tab {self.showCommand.tabText(idx)} used.")
-
-                    break
-            
-            if command_tab == None:
-                for idx in range(self.showCommand.count()): # 구매 방식이 없을 경우 기본 탭 사용
-                    if self.showCommand.tabText(idx) == f"{'매수' if bs else '매도'}":
-                        command_tab = self.showCommand.widget(idx).layout().itemAt(0).widget()
-                        self.showCommand.setCurrentIndex(idx)
-
-                        logger.debug(f"tab {self.showCommand.tabText(idx)} used.")
-
-                        break
-
-            if command_tab == None: #기본 탭도 없을 경우 현재 탭 사용
-                command_tab = self.showCommand.currentWidget().layout().itemAt(0).widget()
-                logger.debug(f"tab {self.showCommand.tabText(self.showCommand.currentIndex())} used.")
+            quantity = current_table.item(row, 3).text()
 
 
-            current_command = command_tab.widget()
+            logger.debug(f"Order: {bs}, {price}, {method}, {quantity}")
 
+            self.executeCommand(f'{bs}_{method}', stock, method, price, quantity)
 
-            for command in current_command.children(): # 커맨드 탭에 대하여
-                self.mutex.lock()
-                if self.paused: # 일시정지 체크
-                    self.progress_signal.emit('주문 일시정지됨.')
-                    self.condition.wait(self.mutex) 
-
-                if not self.running: # 정지 체크
-                    self.progress_signal.emit("주문 정지됨.")
-                    return
-                
-                self.mutex.unlock()
-
-
-
-                if isinstance(command, QWidget):
-                    # command.setVisible(False)
-                    # command.setStyleSheet("QWidget { background-color: white; }")
-                    # command.setVisible(True)
-                    self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: white; }")
-
-                    if command.layout().itemAt(0).widget().currentText() == "커서 이동":
-                        try:
-                            x = int(command.layout().itemAt(1).widget().text())
-                            y = int(command.layout().itemAt(2).widget().text())
-                            logger.debug(f"Move to: {x}, {y}")
-
-                            pyautogui.moveTo(x, y)
-                        except Exception as e:
-                            logger.warning(f"Error, {e}")
-
-                    elif command.layout().itemAt(0).widget().currentText() == "마우스 클릭":
-                        logger.debug("Click")
-                        pyautogui.click()
-
-                    elif command.layout().itemAt(0).widget().currentText() == "키보드 입력":
-                        if command.layout().itemAt(5).widget().currentText() == "테이블에서 가져오기":
-                            logger.debug(f"Type: {command.layout().itemAt(6).widget().currentText()}")
-
-                            idx = command.layout().itemAt(6).widget().currentText()
-
-                            if idx == '종목':
-                                pyautogui.typewrite(stock)
-                            elif idx == '주문가':
-                                pyautogui.typewrite(str(price))
-                            elif idx == '주문 방법':
-                                pyautogui.typewrite(method)
-                            elif idx == '수량':
-                                pyautogui.typewrite(str(quantity))
-                        else:
-                            logger.debug(f"""Type: '{command.layout().itemAt(7).widget().text()}'""")
-                            pyautogui.typewrite(command.layout().itemAt(7).widget().text())
-                    else:
-                        logger.warning("Invalid Command")
-
-                    time.sleep(0.1)
-
-                    # command.setVisible(False)
-                    # command.setStyleSheet("QWidget { background-color: none; }")
-                    # command.setVisible(True)
-
-                    self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: none; }")
-
-                    logger.info(f'command completed')
-
+            self.highlightExcelTable_signal.emit(row, QColor(255, 255, 255)) # 강조 해제
             logger.info(f'command tab completed')
 
             
-            self.highlightExcelTable_signal.emit(row, QColor(255, 255, 255)) # 강조 해제
-            
         logger.info(f'order completed')
         self.progress_signal.emit("주문 완료")
+        self.finished_signal.emit()
+
+
+    def executeCommand(self, tab_name, stock, method = None, price = None, quantity = None):
+        command_tab = None
+    
+        for idx in range(self.showCommand.count()):
+            if self.showCommand.tabText(idx) == tab_name:
+                command_tab = self.showCommand.widget(idx).layout().itemAt(0).widget()
+                self.showCommand.setCurrentIndex(idx)
+
+                logger.debug(f"tab {self.showCommand.tabText(idx)} used.")
+
+                break
+        
+
+        if command_tab == None:
+            pass
+        else:
+            self.executeTab(command_tab, stock, method, price, quantity)
+        
+
+    def executeTab(self, command_tab, stock, method, price, quantity):
+        current_command = command_tab.widget()
+
+
+        for command in current_command.children(): # 커맨드 탭에 대하여
+            self.mutex.lock()
+
+            if self.paused: # 일시정지 체크
+                self.progress_signal.emit('주문 일시정지됨.')
+                self.condition.wait(self.mutex) 
+            
+            if not self.running: # 정지 체크
+                self.progress_signal.emit("주문 정지됨.")
+                return
+            
+            self.mutex.unlock()
+            
+            if isinstance(command, QWidget):
+                self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: white; }")
+
+                command_tab.ensureWidgetVisible(command)
+
+                if command.layout().itemAt(0).widget().currentText() == "커서 이동":
+                    try:
+                        x = int(command.layout().itemAt(1).widget().text())
+                        y = int(command.layout().itemAt(2).widget().text())
+                        duration = float(command.layout().itemAt(8).widget().text())
+                        
+                        logger.debug(f"Move to: {x}, {y}, dur: {duration}")
+                        pyautogui.moveTo(x, y, duration=duration)
+                    except Exception as e:
+                        logger.warning(e)
+                elif command.layout().itemAt(0).widget().currentText() == "마우스 클릭":
+                    logger.debug("Click")
+                    pyautogui.click()
+                elif command.layout().itemAt(0).widget().currentText() == "키보드 입력":
+                    if command.layout().itemAt(5).widget().currentText() == "테이블에서 가져오기":
+                        logger.debug(f"Type: {command.layout().itemAt(6).widget().currentText()}")
+                        try:
+                            idx = command.layout().itemAt(6).widget().currentText()
+                            interval = interval=float(command.layout().itemAt(8).widget().text())
+                            if idx == '종목':
+                                pyautogui.typewrite(stock, interval=interval)
+                            elif idx == '주문가':
+                                pyautogui.typewrite(price, interval=interval)
+                            elif idx == '주문 방법':
+                                pyautogui.typewrite(method, interval=interval)
+                            elif idx == '수량':
+                                pyautogui.typewrite(quantity, interval=interval)
+                        except Exception as e:
+                            logger.warning(e)
+                    else:
+                        logger.debug(f"""Type: '{command.layout().itemAt(7).widget().text()}'""")
+                        pyautogui.typewrite(command.layout().itemAt(7).widget().text())
+                else:
+                    logger.warning("Invalid Command")
+                self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: none; }")
+                logger.info(f'command completed')
+                
+        logger.info(f'command tab completed')
 
     def stop(self):
         self.running = False
-        self.finished_signal.emit()  # 스레드 종료 신호
+        # self.finished_signal.emit()  # 스레드 종료 신호
 
         logger.info("Order Stopped")
 
@@ -252,7 +250,6 @@ class MyWindow(QMainWindow):
         self.addCommandTab.clicked.connect(self.btn_addCommandTab)
         self.copyCommandTab.clicked.connect(self.btn_copyCommandTab)
         self.makeOrder.clicked.connect(self.btn_makeOrder)
-        self.clearOrder.clicked.connect(self.btn_clearOrder)
 
         self.actionSave.triggered.connect(self.saveCommand)
 
@@ -295,9 +292,6 @@ class MyWindow(QMainWindow):
         self.copyCommandTab.setGeometry(QtCore.QRect(600, 500, 131, 31))
         self.copyCommandTab.setToolTip("")
         self.copyCommandTab.setObjectName("copyCommandTab")
-        self.clearOrder = QtWidgets.QPushButton(self.centralwidget)
-        self.clearOrder.setGeometry(QtCore.QRect(314, 510, 111, 23))
-        self.clearOrder.setObjectName("clearOrder")
         mainWindow.setCentralWidget(self.centralwidget)
         self.menuBar = QtWidgets.QMenuBar(mainWindow)
         self.menuBar.setGeometry(QtCore.QRect(0, 0, 1210, 21))
@@ -323,21 +317,18 @@ class MyWindow(QMainWindow):
         self.FileDirectory.setText(_translate("mainWindow", "파일 경로"))
         self.addCommandTab.setText(_translate("mainWindow", "탭 추가"))
         self.copyCommandTab.setText(_translate("mainWindow", "현재 탭 복사"))
-        self.clearOrder.setText(_translate("mainWindow", "주문 데이터 초기화"))
         self.menuFile.setTitle(_translate("mainWindow", "File"))
         self.actionSave.setText(_translate("mainWindow", "Save"))
         self.actionSave.setShortcut(_translate("mainWindow", "Ctrl+S"))
 
 
 
-
-
-    def addExcelTab(self, stock : Stocks): # stocks 데이터로 tab 추가
+    def addExcelTab(self, stock : Stocks, name): # stocks 데이터로 tab 추가
         # QTableWidget 생성
         tempTable = QTableWidget()
         tempTable.setRowCount(stock.order_len())
         tempTable.setColumnCount(4)
-        tempTable.setHorizontalHeaderLabels(["매수/매도", "주문가", "주문 방법", "수량"])
+        tempTable.setHorizontalHeaderLabels([stock.stock, "주문가", "주문 방법", "수량"])
 
         # 데이터 추가
         for row, order in enumerate(stock.orders):
@@ -347,18 +338,15 @@ class MyWindow(QMainWindow):
             tempTable.setItem(row, 3, QTableWidgetItem(str(order.quantity)))
         
         # QTabWidget에 테이블 추가
-        self.showExcelData.addTab(tempTable, stock.stock)
+        self.showExcelData.addTab(tempTable, name)
 
-        logger.info(f"tab {stock.stock} added")
+        logger.info(f"tab {name} added")
     
     def ExcelTabLoad(self):
         data = self.excel.orderData
-
-        for stock in data:
-            self.addExcelTab(stock)
-
-    def ExcelTabClear(self):
-        self.showExcelData.clear()
+        
+        for stock, name in data:
+            self.addExcelTab(stock, name)
 
 
     def btn_FileLoad(self): # 파일 불러오기
@@ -374,16 +362,11 @@ class MyWindow(QMainWindow):
 
             logger.info("successfuly loaded data")
 
-            # self.ExcelTabClear()
+            self.showExcelData.clear()
             self.ExcelTabLoad()
 
         else :
             QMessageBox.about(self, "Error", "파일을 선택해주세요")
-
-    def btn_clearOrder(self):
-        self.showExcelData.clear()
-        self.FileDirectory.setText("파일 경로")
-        self.FileDirectory.setToolTip("파일 경로가 표시됩니다.")
 
 
     def btn_addCommandTab(self, default_name=None):
@@ -489,6 +472,15 @@ class MyWindow(QMainWindow):
         c_text_input.setVisible(False)
         widget_layout.addWidget(c_text_input) # 7
     
+        # delay 입력 필드
+        delay_input = QLineEdit()
+        delay_input.setPlaceholderText("sec")
+        delay_input.setText("1")
+        delay_input.setToolTip("다음 커맨드까지의 시간을 지정합니다.")
+        delay_input.setMaximumWidth(50)
+        delay_input.setVisible(True)
+        widget_layout.addWidget(delay_input) # 8
+
         # 삭제 버튼
         delete_button = QPushButton("커맨드 삭제")
         delete_button.setMaximumWidth(120)
@@ -551,14 +543,17 @@ class MyWindow(QMainWindow):
             c_dropdown_1.setVisible(False)
             c_dropdown_2.setVisible(False)
             c_text_input.setVisible(False)
+            delay_input.setVisible(False)
     
             if value == "커서 이동":
                 int_input_1.setVisible(True)
                 int_input_2.setVisible(True)
                 get_mouse_btn.setVisible(True)
                 move_mouse_btn.setVisible(True)
+                delay_input.setVisible(True)
             elif value == "키보드 입력":
                 c_dropdown_1.setVisible(True)
+                delay_input.setVisible(True)
                 update_c_dropdown(c_dropdown_1.currentText())  # 초기 상태 처리
     
         # 삭제 버튼 동작
@@ -595,10 +590,13 @@ class MyWindow(QMainWindow):
                 self.showCommand.setTabText(current_index, new_name.strip())
 
     def btn_deleteCommandTab(self):
-        current_index = self.showCommand.currentIndex()
-        if current_index != -1:
-            logger.debug(f'removed tab {self.showCommand.tabText(current_index)}')
-            self.showCommand.removeTab(current_index)
+        reply = QMessageBox.question(self, '커맨드 탭 삭제', '현재 커맨드 탭을 삭제하시겠습니까?',QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            current_index = self.showCommand.currentIndex()
+            if current_index != -1:
+                logger.debug(f'removed tab {self.showCommand.tabText(current_index)}')
+                self.showCommand.removeTab(current_index)
 
 
     def btn_copyCommandTab(self):
@@ -670,7 +668,7 @@ class MyWindow(QMainWindow):
                     command_copy = new_command.children()[-1] # 새로운 커맨드
 
 
-                    for i in range(8):
+                    for i in range(command_widget_cnt):
                         if isinstance(command_copy.layout().itemAt(i).widget(), QComboBox): #QComboBox
                             command_copy.layout().itemAt(i).widget().setCurrentIndex(command_text.layout().itemAt(i).widget().currentIndex())
                         elif isinstance(command_copy.layout().itemAt(i).widget(), QLineEdit): #QLineEdit
@@ -685,6 +683,16 @@ class MyWindow(QMainWindow):
 
             logger.debug(f'copied tab {tab_title}')
 
+    def initCommandTab(self):
+        self.btn_addCommandTab("계좌선택")
+        self.btn_addCommandTab("종목선택")
+
+
+        self.btn_addCommandTab("매수_LOC")
+        self.btn_addCommandTab("매수_지정가")
+        
+        self.btn_addCommandTab("매도_LOC")
+        self.btn_addCommandTab("매도_지정가")
 
 
     def btn_makeOrder(self): # 현재 탭에서, 모든 주문 행에 대하여 커맨드를 수행
@@ -711,6 +719,7 @@ class MyWindow(QMainWindow):
     def on_finished(self): # 주문 완료 시
         # QMessageBox.about(self, "알림", "주문 완료됨")
         self.order_thread.deleteLater()
+        self.order_thread = None
 
 
     def ExcelTabHighlight(self, row, color):
@@ -760,7 +769,7 @@ class MyWindow(QMainWindow):
                 if isinstance(command, QWidget):
                     com = []
 
-                    for i in range(8):
+                    for i in range(command_widget_cnt):
                         if isinstance(command.layout().itemAt(i).widget(), QComboBox): #QComboBox
                             com.append(command.layout().itemAt(i).widget().currentIndex())
                         elif isinstance(command.layout().itemAt(i).widget(), QLineEdit): #QLineEdit
@@ -777,19 +786,19 @@ class MyWindow(QMainWindow):
             pickle.dump(commandTabs, f)
 
 
-    def openFile(self):
+    def loadCommand(self, file_path = 'command.pickle'):
         try:
-            with open('command.pickle', 'rb') as f:
-                return pickle.load(f)
+            with open(file_path, 'rb') as f:
+                commandTabs = pickle.load(f)
         except FileNotFoundError:
-            return []
+            logger.info('command file Not found')
 
-    def loadCommand(self):
-        commandTabs = self.openFile()
+            if self.showCommand.count() == 0:
+                logger.info('initializing Command Tab')
+                self.initCommandTab()
 
-        if commandTabs == []:
             return
-        
+
         for tabData in commandTabs:
         # 새로운 탭 생성
             new_tab = QWidget()
@@ -846,7 +855,7 @@ class MyWindow(QMainWindow):
 
                 i = 0
 
-                for idx in range(8):
+                for idx in range(command_widget_cnt):
                     if isinstance(command_copy.layout().itemAt(idx).widget(), QComboBox): #QComboBox
                         command_copy.layout().itemAt(idx).widget().setCurrentIndex(command_text[i])
                         i += 1
