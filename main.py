@@ -1,11 +1,11 @@
+import os
 import sys
 import pyautogui
-import time
 import logging
 import pickle
 
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import *
+from PyQt5.QtWidgets import QWidget, QMainWindow, QTabWidget, QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox, QVBoxLayout, QScrollArea, QHBoxLayout, QPushButton, QComboBox, QLineEdit, QInputDialog, QApplication
+from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition, QTimer
 from PyQt5.QtGui import QColor
 from PyQt5 import QtCore, QtWidgets
 from pynput import keyboard
@@ -13,38 +13,19 @@ from pynput import keyboard
 
 from excel import *
 from data import *
+from log import logger
 
 # const
-command_widget_cnt = 10  # command_widget 내부 위젯 갯수
+command_widget_cnt = 11  # command_widget 내부 위젯 갯수
 
 
+# 디렉토리
+cur_dir = os.getcwd()
+cmd_dir = os.path.join(cur_dir, 'coms')
 
-# 루트 로거 생성
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # 모든 로그 메시지를 처리하기 위해 DEBUG 레벨로 설정
-
-# 로그 파일 (logger.log) 핸들러 설정
-file_handler = logging.FileHandler('logger.log')
-file_handler.setLevel(logging.INFO)  # 모든 로그를 기록
-
-# 에러 로그 파일 (error.log) 핸들러 설정
-error_handler = logging.FileHandler('error.log')
-error_handler.setLevel(logging.ERROR)  # ERROR 레벨 이상만 기록
-
-# 콘솔 핸들러 설정
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)  # 모든 로그를 콘솔에 출력
-
-# 로그 포맷 설정
-formatter = logging.Formatter('%(asctime)s  %(levelname)s: %(message)s')
-file_handler.setFormatter(formatter)
-error_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# 핸들러 추가
-logger.addHandler(file_handler)
-logger.addHandler(error_handler)
-logger.addHandler(console_handler)
+# 디렉토리 생성
+if not os.path.exists(cmd_dir):
+    os.makedirs(cmd_dir)
 
 
 # 예외처리
@@ -62,6 +43,7 @@ class OrderThread(QThread):
     highlightExcelTable_signal = pyqtSignal(int, QColor) # 주문중인 행 강조 신호
     highlightCommandWidget_signal = pyqtSignal(QWidget, str) # 진행중인 커맨드 강조 신호
 
+
     def __init__(self, showExcelData, showCommand):
         super().__init__()
         self.showExcelData = showExcelData
@@ -72,6 +54,7 @@ class OrderThread(QThread):
         self.mutex = QMutex()
         self.condition = QWaitCondition()
         self.paused = False
+        self.waiting = False
 
     def run(self):
         if self.showExcelData.count() == 0: # 엑셀 파일이 불러오지 않은 경우
@@ -91,9 +74,25 @@ class OrderThread(QThread):
         logger.debug(f"Stock: {stock}")
 
 
+
         self.executeCommand("계좌선택", stock)
+    
+        self.mutex.lock()
+        if self.paused: # 일시정지 체크
+            self.progress_signal.emit('주문 일시정지됨.')
+            self.waiting = True
+            self.condition.wait(self.mutex)
+
+            self.waiting = False
+        
+        if not self.running: # 정지 체크
+            self.progress_signal.emit("주문 정지됨.")
+            return  
+        self.mutex.unlock()
 
         self.executeCommand("종목선택", stock)
+
+
 
         for row in range(current_table.rowCount()): # 주문 row에 대하여
             self.highlightExcelTable_signal.emit(row, QColor(128, 128, 128)) # 강조
@@ -101,7 +100,10 @@ class OrderThread(QThread):
             self.mutex.lock()
             if self.paused: # 일시정지 체크
                 self.progress_signal.emit('주문 일시정지됨.')
-                self.condition.wait(self.mutex) 
+                self.waiting = True
+                self.condition.wait(self.mutex)
+
+                self.waiting = False
 
             if not self.running: # 정지 체크
                 self.progress_signal.emit("주문 정지됨.")
@@ -119,7 +121,25 @@ class OrderThread(QThread):
 
             logger.debug(f"Order: {bs}, {price}, {method}, {quantity}")
 
-            self.executeCommand(f'{bs}_{method}', stock, method, price, quantity)
+
+            self.executeCommand(f'{bs}_{method}', stock, method, price, quantity) # 수도_방법 실행
+
+            self.mutex.lock()
+            if self.paused: # 일시정지 체크
+                self.progress_signal.emit('주문 일시정지됨.')
+                self.waiting = True
+                self.condition.wait(self.mutex)
+
+                self.waiting = False
+
+            if not self.running: # 정지 체크
+                self.progress_signal.emit("주문 정지됨.")
+                self.highlightExcelTable_signal.emit(row, QColor(255, 255, 255)) # 강조 해제
+                return
+
+            self.executeCommand("매매", stock, method, price, quantity) # 매매 실행
+
+
 
             self.highlightExcelTable_signal.emit(row, QColor(255, 255, 255)) # 강조 해제
             logger.info(f'command tab completed')
@@ -138,13 +158,13 @@ class OrderThread(QThread):
                 command_tab = self.showCommand.widget(idx).layout().itemAt(0).widget()
                 self.showCommand.setCurrentIndex(idx)
 
-                logger.debug(f"tab {self.showCommand.tabText(idx)} used.")
+                logger.debug(f"tab {idx}, {self.showCommand.tabText(idx)} used.")
 
                 break
         
 
         if command_tab == None:
-            pass
+            logger.debug("No such Tab")
         else:
             self.executeTab(command_tab, stock, method, price, quantity)
         
@@ -158,7 +178,10 @@ class OrderThread(QThread):
 
             if self.paused: # 일시정지 체크
                 self.progress_signal.emit('주문 일시정지됨.')
-                self.condition.wait(self.mutex) 
+                self.waiting = True
+                self.condition.wait(self.mutex)
+
+                self.waiting = False
             
             if not self.running: # 정지 체크
                 self.progress_signal.emit("주문 정지됨.")
@@ -166,10 +189,10 @@ class OrderThread(QThread):
             
             self.mutex.unlock()
             
-            if isinstance(command, QWidget):
-                self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: white; }")
+            if isinstance(command, QWidget): # 위젯 실행
+                self.highlightCommandWidget_signal.emit(command, "QWidget { background-color: white; }") # 위젯 강조
 
-                command_tab.ensureWidgetVisible(command)
+                command_tab.ensureWidgetVisible(command) # 위젯이 보이도록 스크롤
 
                 if command.layout().itemAt(0).widget().currentText() == "커서 이동":
                     try:
@@ -214,6 +237,12 @@ class OrderThread(QThread):
         self.running = False
         # self.finished_signal.emit()  # 스레드 종료 신호
 
+        if self.paused == True: # 재개 후 종료
+            self.mutex.lock()
+            self.paused = False
+            self.condition.wakeAll()  # 스레드를 재개
+            self.mutex.unlock()
+
         logger.info("Order Stopped")
 
     def pause(self):
@@ -235,6 +264,8 @@ class OrderThread(QThread):
     def isPaused(self):
         return self.paused
 
+    def isWaiting(self):
+        return self.waiting
 
 class MyWindow(QMainWindow):
     def __init__(self):
@@ -251,7 +282,9 @@ class MyWindow(QMainWindow):
         self.copyCommandTab.clicked.connect(self.btn_copyCommandTab)
         self.makeOrder.clicked.connect(self.btn_makeOrder)
 
-        self.actionSave.triggered.connect(self.saveCommand)
+        self.actionSave.triggered.connect(self.saveCommand_)
+        self.actionSave_as.triggered.connect(self.saveCommandFile)
+        self.actionLoad.triggered.connect(self.loadCommandFile)
 
         self.loadCommand()
 
@@ -301,7 +334,14 @@ class MyWindow(QMainWindow):
         mainWindow.setMenuBar(self.menuBar)
         self.actionSave = QtWidgets.QAction(mainWindow)
         self.actionSave.setObjectName("actionSave")
+        self.actionSave_as = QtWidgets.QAction(mainWindow)
+        self.actionSave_as.setObjectName("actionSave_as")
+        self.actionLoad = QtWidgets.QAction(mainWindow)
+        self.actionLoad.setObjectName("actionLoad")
+        self.menuFile.addAction(self.actionLoad)
+        self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionSave)
+        self.menuFile.addAction(self.actionSave_as)
         self.menuBar.addAction(self.menuFile.menuAction())
 
         self.retranslateUi(mainWindow)
@@ -320,7 +360,8 @@ class MyWindow(QMainWindow):
         self.menuFile.setTitle(_translate("mainWindow", "File"))
         self.actionSave.setText(_translate("mainWindow", "Save"))
         self.actionSave.setShortcut(_translate("mainWindow", "Ctrl+S"))
-
+        self.actionSave_as.setText(_translate("mainWindow", "Save as"))
+        self.actionLoad.setText(_translate("mainWindow", "Load"))
 
 
     def addExcelTab(self, stock : Stocks, name): # stocks 데이터로 tab 추가
@@ -366,7 +407,7 @@ class MyWindow(QMainWindow):
             self.ExcelTabLoad()
 
         else :
-            QMessageBox.about(self, "Error", "파일을 선택해주세요")
+            QMessageBox.about(self, "Error", "파일이 선택되지 않았습니다.")
 
 
     def btn_addCommandTab(self, default_name=None):
@@ -481,6 +522,13 @@ class MyWindow(QMainWindow):
         delay_input.setVisible(True)
         widget_layout.addWidget(delay_input) # 8
 
+        # tooltip 입력 버튼
+        widget_tip = QPushButton("...")
+        widget_tip.setMaximumWidth(20)
+        widget_tip.setToolTip("memo")
+        widget_layout.addWidget(widget_tip) # 9
+
+
         # 삭제 버튼
         delete_button = QPushButton("커맨드 삭제")
         delete_button.setMaximumWidth(120)
@@ -556,16 +604,35 @@ class MyWindow(QMainWindow):
                 delay_input.setVisible(True)
                 update_c_dropdown(c_dropdown_1.currentText())  # 초기 상태 처리
     
+
+        # 툴팁 업데이트
+        def update_widget_tip():
+            current_tooltip = widget_tip.toolTip()
+
+            # QInputDialog를 사용해 새 이름 입력 받기
+            new_name, ok = QInputDialog.getText(
+                self, "메모 수정", "새로운 메모 입력:", text=current_tooltip
+            )
+
+            # 입력이 확인되면 탭 이름 변경
+            if ok and new_name.strip():
+                widget_tip.setToolTip(new_name.strip())
+
+
         # 삭제 버튼 동작
         delete_button.clicked.connect(lambda: self.deleteCommandWidget(widget, layout))
     
         # 버튼 동작 연결
         get_mouse_btn.clicked.connect(get_mouse_position)
         move_mouse_btn.clicked.connect(move_to_position)
+        widget_tip.clicked.connect(update_widget_tip)
     
         # 초기 상태 설정
         update_widget("커서 이동")
+
+
         layout.addWidget(widget)
+        logger.debug(f"command widget added to {layout}")
 
 
     def deleteCommandWidget(self, widget, layout):
@@ -674,7 +741,7 @@ class MyWindow(QMainWindow):
                         elif isinstance(command_copy.layout().itemAt(i).widget(), QLineEdit): #QLineEdit
                             command_copy.layout().itemAt(i).widget().setText(command_text.layout().itemAt(i).widget().text())
                         elif isinstance(command_copy.layout().itemAt(i).widget(), QPushButton): # QPushbutton
-                            pass
+                            command_copy.layout().itemAt(i).widget().setToolTip(command_text.layout().itemAt(i).widget().toolTip())
 
             
         # 새로운 탭을 추가
@@ -693,6 +760,11 @@ class MyWindow(QMainWindow):
         
         self.btn_addCommandTab("매도_LOC")
         self.btn_addCommandTab("매도_지정가")
+        
+        self.btn_addCommandTab("매매")
+
+        self.saveCommand(os.path.join(cmd_dir, 'default.pickle'))
+
 
 
     def btn_makeOrder(self): # 현재 탭에서, 모든 주문 행에 대하여 커맨드를 수행
@@ -732,20 +804,24 @@ class MyWindow(QMainWindow):
         widget.setStyleSheet(color)
 
 
+
     def on_press(self, key): # 키보드 입력 시
         try:
             if key == keyboard.Key.f4:
                 if self.order_thread and self.order_thread.isRunning():
                     logger.info("Stopping the order thread.")
                     self.order_thread.stop()  # OrderThread 멈추기
+                    
+                    self.makeOrder.setText('주문하기')
+
             if key == keyboard.Key.f3:
-                if self.order_thread:
-                    if self.order_thread.isPaused():
+                if self.order_thread and self.order_thread.isRunning():
+                    if self.order_thread.isWaiting() == True:
                         logger.info("Resuming order thread.")
                         self.order_thread.resume()
                         
                         self.makeOrder.setText('주문하기')
-                    else:
+                    elif self.order_thread.isWaiting() == False:
                         logger.info("Pausing order thread.")
                         self.order_thread.pause()
 
@@ -754,7 +830,20 @@ class MyWindow(QMainWindow):
             pass
 
 
-    def saveCommand(self):
+
+    def saveCommand_(self):
+        self.saveCommand()
+
+    def saveCommandFile(self):
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getSaveFileName(self, 'Save As', '', 'pickle (*.pickle);; All Files (*)', options=options)
+
+        if fileName:
+            self.saveCommand(fileName)
+
+            print(f"File saved as: {fileName}")
+
+    def saveCommand(self, file_path = os.path.join(cmd_dir, 'default.pickle')):
         commandTabs = []
 
         for idx in range(self.showCommand.count()): # 모든 탭에 대하여
@@ -775,27 +864,44 @@ class MyWindow(QMainWindow):
                         elif isinstance(command.layout().itemAt(i).widget(), QLineEdit): #QLineEdit
                             com.append(command.layout().itemAt(i).widget().text())
                         elif isinstance(command.layout().itemAt(i).widget(), QPushButton): # QPushbutton
-                            pass
+                            com.append(command.layout().itemAt(i).widget().toolTip())
+                            
                         
                     Tab.add_command(com)
             
             commandTabs.append(Tab)
             logger.debug(f'Tab {Tab.name} appended')
 
-        with open('command.pickle', 'wb') as f:
+
+        with open(file_path, 'wb') as f:
             pickle.dump(commandTabs, f)
+        
+        logger.info("successfully saved command file")
 
 
-    def loadCommand(self, file_path = 'command.pickle'):
+    def loadCommandFile(self):
+        fname = QFileDialog.getOpenFileName(self, '파일 불러오기', '', 'pickle(*.pickle *.p);; All Files(*.*)')
+        
+        if fname[0]: #파일 선택
+            logger.info(f"selected Command file : {fname[0]}")
+
+            self.showCommand.clear()
+
+            self.loadCommand(fname[0])
+
+            logger.info("successfuly loaded data")
+
+        else :
+            QMessageBox.about(self, "Error", "파일이 선택되지 않았습니다.")
+
+    def loadCommand(self, file_path = os.path.join(cmd_dir, 'default.pickle')):
         try:
             with open(file_path, 'rb') as f:
                 commandTabs = pickle.load(f)
         except FileNotFoundError:
             logger.info('command file Not found')
 
-            if self.showCommand.count() == 0:
-                logger.info('initializing Command Tab')
-                self.initCommandTab()
+            self.initCommandTab()
 
             return
 
@@ -825,7 +931,9 @@ class MyWindow(QMainWindow):
             # ScrollArea 내부에 위젯 추가 버튼
             add_widget_button = QPushButton("커맨드 추가")
             add_widget_button.setMaximumWidth(120)
-            add_widget_button.clicked.connect(lambda: self.addCommandWidget(scroll_layout))
+
+            #tq
+            add_widget_button.clicked.connect(self.create_lambda(scroll_layout))
             button_layout.addWidget(add_widget_button)
 
             # 탭 이름 수정 버튼
@@ -843,6 +951,7 @@ class MyWindow(QMainWindow):
             # 레이아웃 구성
             tab_layout.addWidget(scroll_area)
             tab_layout.addLayout(button_layout)
+
 
         # 위젯들 생성
             new_command_tab = new_tab.layout().itemAt(0).widget()
@@ -863,11 +972,22 @@ class MyWindow(QMainWindow):
                         command_copy.layout().itemAt(idx).widget().setText(command_text[i])
                         i += 1
                     elif isinstance(command_copy.layout().itemAt(idx).widget(), QPushButton): # QPushbutton
-                        pass
+                        command_copy.layout().itemAt(idx).widget().setToolTip(command_text[i])
+                        i += 1
+                        
 
             
         # 새로운 탭을 추가
             self.showCommand.addTab(new_tab, tabData.name)
+            logger.debug(f'tab {tabData.name} added')
+
+
+        if self.showCommand.count() == 0:
+            logger.info('initializing Command Tab')
+            self.initCommandTab()
+
+    def create_lambda(self, layout):
+        return lambda: self.addCommandWidget(layout)
 
 
 
